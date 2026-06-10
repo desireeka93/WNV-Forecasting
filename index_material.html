@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arboviral Forecast</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/georaster"></script>
+<script src="https://unpkg.com/georaster-layer-for-leaflet"></script>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --md-surface:      #1c1b1f;
+    --md-surface2:     #2b2930;
+    --md-surface3:     #312f37;
+    --md-outline:      #49454f;
+    --md-on-surface:   #e6e1e5;
+    --md-on-surface2:  #cac4d0;
+    --md-muted:        #79747e;
+    --md-primary:      #d0bcff;
+    --md-primary-con:  #4f378b;
+    --md-error:        #f2b8b5;
+    --md-warn:         #ffb77a;
+    --elev1: 0 1px 2px rgba(0,0,0,.5), 0 1px 3px 1px rgba(0,0,0,.4);
+    --elev2: 0 1px 2px rgba(0,0,0,.5), 0 2px 6px 2px rgba(0,0,0,.4);
+    --elev3: 0 4px 8px 3px rgba(0,0,0,.4), 0 1px 3px rgba(0,0,0,.5);
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+  }
+
+  body {
+    background: var(--md-surface);
+    color: var(--md-on-surface);
+    font-family: "Roboto", sans-serif;
+    font-size: 14px;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── Top App Bar (Material 3) ── */
+  .app-bar {
+    background: var(--md-surface2);
+    box-shadow: var(--elev1);
+    padding: 0 16px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+    z-index: 10;
+  }
+  .app-bar-title {
+    font-size: 16px;
+    font-weight: 500;
+    color: var(--md-on-surface);
+    letter-spacing: 0.01em;
+    flex: 1;
+  }
+  .app-bar-subtitle {
+    font-size: 12px;
+    color: var(--md-muted);
+    letter-spacing: 0.04em;
+  }
+  .icon-btn {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--md-on-surface2);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    transition: background 0.2s;
+  }
+  .icon-btn:hover { background: rgba(255,255,255,0.08); }
+
+  /* ── Body ── */
+  .body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── Navigation Rail (left) ── */
+  nav.rail {
+    width: 80px;
+    flex-shrink: 0;
+    background: var(--md-surface2);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 12px 0;
+    gap: 4px;
+    border-right: 1px solid rgba(73,69,79,0.3);
+  }
+  .rail-item {
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    width: 56px; padding: 12px 4px;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: background 0.15s;
+    border: none; background: transparent; color: var(--md-muted);
+  }
+  .rail-item:hover { background: rgba(255,255,255,0.05); }
+  .rail-item.active { background: var(--md-primary-con); color: var(--md-primary); }
+  .rail-item .rail-icon { font-size: 20px; }
+  .rail-item .rail-label { font-size: 9px; font-weight: 500; letter-spacing: 0.04em; text-align: center; line-height: 1.2; }
+
+  /* ── Sidebar panel ── */
+  aside {
+    width: 220px;
+    flex-shrink: 0;
+    background: var(--md-surface);
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    padding: 12px;
+    gap: 8px;
+    border-right: 1px solid rgba(73,69,79,0.2);
+  }
+
+  /* ── Material Cards ── */
+  .card {
+    background: var(--md-surface2);
+    border-radius: var(--radius-lg);
+    padding: 14px;
+    box-shadow: var(--elev1);
+  }
+  .card-title {
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--md-muted);
+    margin-bottom: 10px;
+  }
+
+  /* ── Filled select (Material 3 style) ── */
+  .select-wrap {
+    background: var(--md-surface3);
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+    border-bottom: 2px solid var(--md-outline);
+    transition: border-color 0.2s;
+  }
+  .select-wrap:focus-within { border-bottom-color: var(--md-primary); }
+  select {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--md-on-surface);
+    padding: 10px 36px 10px 12px;
+    font-size: 13px;
+    font-family: "Roboto", sans-serif;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2379747e'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+  }
+  select:focus { outline: none; }
+
+  /* ── Slider ── */
+  .week-header { display: flex; justify-content: space-between; margin-bottom: 6px; }
+  #week-display { font-size: 13px; font-weight: 500; color: var(--md-on-surface); }
+  #week-counter { font-size: 11px; color: var(--md-muted); }
+  input[type=range] {
+    width: 100%; accent-color: var(--md-primary);
+    cursor: pointer; height: 4px; margin-bottom: 8px;
+  }
+
+  /* ── Filled button (Material 3) ── */
+  #play-btn {
+    width: 100%;
+    background: var(--md-primary-con);
+    color: var(--md-primary);
+    border: none;
+    border-radius: 20px;
+    padding: 8px;
+    font-size: 12px;
+    font-family: "Roboto", sans-serif;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: background 0.15s, box-shadow 0.15s;
+    box-shadow: var(--elev1);
+  }
+  #play-btn:hover { box-shadow: var(--elev2); background: #5f4b9e; }
+  #play-btn.playing { background: #4a1b1b; color: var(--md-error); }
+
+  /* ── Switch (Material 3) ── */
+  .switch-row { display: flex; align-items: center; gap: 10px; }
+  .switch-wrap { position: relative; width: 36px; height: 20px; flex-shrink: 0; }
+  .switch-wrap input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch-track {
+    position: absolute; inset: 0;
+    background: var(--md-outline); border-radius: 10px;
+    cursor: pointer; transition: background 0.2s;
+    border: 2px solid var(--md-outline);
+  }
+  .switch-wrap input:checked + .switch-track { background: var(--md-primary-con); border-color: var(--md-primary-con); }
+  .switch-thumb {
+    position: absolute; top: 3px; left: 3px;
+    width: 14px; height: 14px; background: var(--md-outline);
+    border-radius: 50%; pointer-events: none;
+    transition: transform 0.2s, background 0.2s, width 0.1s;
+  }
+  .switch-wrap input:checked ~ .switch-thumb { transform: translateX(16px); background: var(--md-primary); }
+  .switch-label { font-size: 12px; color: var(--md-on-surface2); }
+
+  /* ── Legend ── */
+  .legend-bar-wrap { display: flex; gap: 10px; height: 140px; }
+  #legend-bar { width: 12px; border-radius: 4px; flex-shrink: 0; height: 140px; }
+  .legend-ticks { display: flex; flex-direction: column; justify-content: space-between; font-size: 11px; color: var(--md-muted); }
+
+  /* ── Status chip ── */
+  #status {
+    font-size: 11px; color: var(--md-muted); text-align: center;
+    padding: 4px 10px; border-radius: 20px;
+    background: var(--md-surface3);
+    min-height: 26px; display: flex; align-items: center; justify-content: center;
+  }
+  #status.loading { color: var(--md-primary); }
+  #status.error   { color: var(--md-error); background: #3b1212; }
+
+  /* ── Map ── */
+  .map-wrap {
+    flex: 1; position: relative; overflow: hidden;
+  }
+  #map { width: 100%; height: 100%; }
+
+  /* ── FAB (floating week label) ── */
+  .fab-week {
+    position: absolute; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: var(--md-surface2);
+    color: var(--md-on-surface);
+    border-radius: 16px;
+    padding: 10px 20px;
+    box-shadow: var(--elev3);
+    font-size: 13px;
+    font-weight: 500;
+    pointer-events: none;
+    z-index: 800;
+    white-space: nowrap;
+    opacity: 0.95;
+  }
+  .fab-week span { color: var(--md-primary); font-weight: 700; }
+
+  /* ── Popup ── */
+  .leaflet-popup-content-wrapper {
+    background: var(--md-surface2);
+    color: var(--md-on-surface);
+    border-radius: var(--radius-md);
+    box-shadow: var(--elev3);
+    font-family: "Roboto", sans-serif;
+    font-size: 12px;
+    border: none;
+  }
+  .leaflet-popup-tip { background: var(--md-surface2); }
+  .leaflet-popup-content { margin: 12px 16px; line-height: 2; }
+  .popup-label { font-size: 10px; color: var(--md-muted); letter-spacing: 0.04em; text-transform: uppercase; }
+  .popup-val { color: var(--md-warn); font-size: 16px; font-weight: 700; }
+  .popup-unit { font-size: 10px; color: var(--md-muted); }
+
+  /* Leaflet overrides */
+  .leaflet-control-zoom a {
+    background: var(--md-surface2) !important;
+    color: var(--md-on-surface) !important;
+    border-color: var(--md-outline) !important;
+  }
+</style>
+</head>
+<body>
+
+<div class="app-bar">
+  <span class="app-bar-title">Arboviral Forecast</span>
+  <span class="app-bar-subtitle" id="year-label">Arizona · 2025</span>
+</div>
+
+<div class="body">
+
+  <!-- Navigation rail -->
+  <nav class="rail">
+    <button class="rail-item active" id="nav-risk" onclick="switchNav('risk',this)">
+      <span class="rail-icon">⚠</span>
+      <span class="rail-label">WNV Risk</span>
+    </button>
+    <button class="rail-item" id="nav-mosq" onclick="switchNav('mosq',this)">
+      <span class="rail-icon">🦟</span>
+      <span class="rail-label">Mosquito</span>
+    </button>
+    <button class="rail-item" id="nav-cq" onclick="switchNav('cq',this)">
+      <span class="rail-icon">Cq</span>
+      <span class="rail-label">C. quinque</span>
+    </button>
+    <button class="rail-item" id="nav-ct" onclick="switchNav('ct',this)">
+      <span class="rail-icon">Ct</span>
+      <span class="rail-label">C. tarsalis</span>
+    </button>
+  </nav>
+
+  <!-- Sidebar -->
+  <aside>
+
+    <div class="card">
+      <div class="card-title">Data layer</div>
+      <div class="select-wrap">
+        <select id="layer-select">
+          <option value="wnv_risk">WNV Risk</option>
+          <option value="mosquito_abundance">Mosquito Abundance</option>
+          <option value="culex_quinque">Culex quinquefasciatus</option>
+          <option value="culex_tarsalis">Culex tarsalis</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Week</div>
+      <div class="week-header">
+        <span id="week-display">—</span>
+        <span id="week-counter"></span>
+      </div>
+      <input type="range" id="week-slider" min="0" value="0">
+      <button id="play-btn">▶ Play animation</button>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Accessibility</div>
+      <div class="switch-row">
+        <label class="switch-wrap">
+          <input type="checkbox" id="cb-toggle">
+          <div class="switch-track"></div>
+          <div class="switch-thumb"></div>
+        </label>
+        <span class="switch-label">Colorblind palette</span>
+      </div>
+    </div>
+
+    <div class="card" style="flex:1;display:flex;flex-direction:column;gap:8px;">
+      <div class="card-title" id="legend-title">Legend</div>
+      <div class="legend-bar-wrap">
+        <canvas id="legend-bar" width="12" height="140"></canvas>
+        <div class="legend-ticks">
+          <span id="leg-max">—</span>
+          <span id="leg-mid">—</span>
+          <span id="leg-min">—</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="status">Initializing…</div>
+
+  </aside>
+
+  <!-- Map -->
+  <div class="map-wrap">
+    <div id="map"></div>
+    <div class="fab-week" id="fab-week"><span id="fab-label">—</span></div>
+  </div>
+
+</div>
+
+<script>
+const YEAR = 2025;
+const LAYER_PATHS = {
+  wnv_risk:           "dbase/app/risk",
+  mosquito_abundance: "dbase/app/culex",
+  culex_quinque:      "dbase/app/cq",
+  culex_tarsalis:     "dbase/app/ct"
+};
+const LAYER_LABELS = {
+  wnv_risk:           "WNV Risk",
+  mosquito_abundance: "Mosquito Abundance",
+  culex_quinque:      "Culex quinquefasciatus",
+  culex_tarsalis:     "Culex tarsalis"
+};
+const NAV_TO_LAYER = {
+  risk: "wnv_risk", mosq: "mosquito_abundance", cq: "culex_quinque", ct: "culex_tarsalis"
+};
+const WEEKS_TO_CHECK = Array.from({length:52},(_,i)=>i+1);
+
+function lerpColor(c1,c2,t){return[Math.round(c1[0]+(c2[0]-c1[0])*t),Math.round(c1[1]+(c2[1]-c1[1])*t),Math.round(c1[2]+(c2[2]-c1[2])*t)];}
+function hexToRgb(hex){return[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];}
+function colorWnv(val){
+  if(val===null||isNaN(val)||val===undefined)return null;
+  const t=Math.max(0,Math.min(1,val));
+  const[r,g,b]=lerpColor(hexToRgb("#FFEBD6"),hexToRgb("#C40A0A"),t);
+  return `rgba(${r},${g},${b},${t.toFixed(3)})`;
+}
+function colorMosqDefault(val){
+  if(val===null||isNaN(val)||val===undefined)return null;
+  const t=Math.max(0,Math.min(1,val/100));
+  const stops=[hexToRgb("#2e6930"),hexToRgb("#FEF08A"),hexToRgb("#EF4444")];
+  const c=t<0.5?lerpColor(stops[0],stops[1],t*2):lerpColor(stops[1],stops[2],(t-0.5)*2);
+  return `rgba(${c[0]},${c[1]},${c[2]},0.8)`;
+}
+function colorMosqCB(val){
+  if(val===null||isNaN(val)||val===undefined)return null;
+  const t=Math.max(0,Math.min(1,val/100));
+  const stops=[hexToRgb("#440154"),hexToRgb("#31688E"),hexToRgb("#35B779"),hexToRgb("#FDE725")];
+  const seg=t*(stops.length-1);
+  const i=Math.min(Math.floor(seg),stops.length-2);
+  const c=lerpColor(stops[i],stops[i+1],seg-i);
+  return `rgba(${c[0]},${c[1]},${c[2]},0.8)`;
+}
+function getColorFn(layerId,cb){
+  if(layerId==="wnv_risk")return colorWnv;
+  return cb?colorMosqCB:colorMosqDefault;
+}
+
+function weekLabel(week){
+  const jan1=new Date(YEAR,0,1);
+  const d=jan1.getDay();
+  const daysToMon=d===0?1:(8-d);
+  const firstMon=new Date(jan1); firstMon.setDate(jan1.getDate()+(daysToMon%7));
+  const start=new Date(firstMon); start.setDate(firstMon.getDate()+(week-1)*7);
+  const end=new Date(start); end.setDate(start.getDate()+6);
+  const M=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  return start.getMonth()===end.getMonth()
+    ?`${M[start.getMonth()]} ${start.getDate()}–${end.getDate()}`
+    :`${M[start.getMonth()]} ${start.getDate()} – ${M[end.getMonth()]} ${end.getDate()}`;
+}
+function tifFilename(week){return `X${YEAR}${String(week).padStart(2,"0")}.tif`;}
+
+async function probeWeeks(layerId){
+  const path=LAYER_PATHS[layerId],found=[];
+  await Promise.all(WEEKS_TO_CHECK.map(async w=>{
+    try{const r=await fetch(`${path}/${tifFilename(w)}`,{method:"HEAD"});if(r.ok)found.push(w);}catch(e){}
+  }));
+  return found.sort((a,b)=>a-b);
+}
+
+const map=L.map("map",{center:[33.4,-112.07],zoom:7,zoomControl:true});
+L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",{
+  attribution:'&copy; <a href="https://carto.com/">CARTO</a>',subdomains:"abcd",maxZoom:19
+}).addTo(map);
+
+let currentLayer=null,availableWeeks=[],currentWeekIdx=0,playInterval=null,isPlaying=false;
+
+const layerSelect=document.getElementById("layer-select");
+const weekSlider=document.getElementById("week-slider");
+const weekDisplay=document.getElementById("week-display");
+const weekCounter=document.getElementById("week-counter");
+const playBtn=document.getElementById("play-btn");
+const cbToggle=document.getElementById("cb-toggle");
+const statusEl=document.getElementById("status");
+const fabLabel=document.getElementById("fab-label");
+
+document.getElementById("year-label").textContent=`Arizona · ${YEAR}`;
+
+function setStatus(msg,cls){statusEl.textContent=msg;statusEl.className=cls;}
+
+async function loadTif(layerId,weekNum){
+  const url=`${LAYER_PATHS[layerId]}/${tifFilename(weekNum)}`;
+  setStatus("Loading…","loading");
+  try{
+    const ab=await(await fetch(url)).arrayBuffer();
+    const gr=await parseGeoraster(ab);
+    if(currentLayer){map.removeLayer(currentLayer);currentLayer=null;}
+    const colorFn=getColorFn(layerId,cbToggle.checked);
+    const layer=new GeoRasterLayer({
+      georaster:gr,
+      opacity:layerId==="wnv_risk"?1.0:0.8,
+      pixelValuesToColorFn:values=>{
+        const v=values[0];
+        if(v===gr.noDataValue||v===null||isNaN(v))return null;
+        return colorFn(v);
+      },
+      resolution:256
+    });
+    layer.addTo(map);
+    layer._georaster=gr;
+    currentLayer=layer;
+    const wl=weekLabel(weekNum);
+    setStatus(`${LAYER_LABELS[layerId]} · ${wl}`,"");
+    fabLabel.textContent=wl;
+    updateLegend(layerId,cbToggle.checked);
+  }catch(err){setStatus("Could not load layer","error");console.error(err);}
+}
+
+function updateWeekDisplay(){
+  const w=availableWeeks[currentWeekIdx];
+  weekDisplay.textContent=weekLabel(w);
+  weekCounter.textContent=`${currentWeekIdx+1}/${availableWeeks.length}`;
+}
+
+async function initLayer(layerId,preserveIdx){
+  setStatus("Scanning weeks…","loading");
+  weekSlider.disabled=true;
+  availableWeeks=await probeWeeks(layerId);
+  if(!availableWeeks.length){setStatus("No data found","error");return;}
+  weekSlider.max=availableWeeks.length-1;
+  weekSlider.disabled=false;
+  if(preserveIdx)currentWeekIdx=Math.min(currentWeekIdx,availableWeeks.length-1);
+  else currentWeekIdx=0;
+  weekSlider.value=currentWeekIdx;
+  updateWeekDisplay();
+  await loadTif(layerId,availableWeeks[currentWeekIdx]);
+}
+
+function updateLegend(layerId,cb){
+  const canvas=document.getElementById("legend-bar");
+  const h=canvas.height,ctx=canvas.getContext("2d");
+  ctx.clearRect(0,0,canvas.width,h);
+  for(let i=0;i<h;i++){
+    const t=1-i/h;
+    const color=layerId==="wnv_risk"?colorWnv(t):(cb?colorMosqCB(t*100):colorMosqDefault(t*100));
+    if(color){ctx.fillStyle=color;ctx.fillRect(0,i,canvas.width,1);}
+  }
+  document.getElementById("leg-max").textContent=layerId==="wnv_risk"?"100":"100+";
+  document.getElementById("leg-mid").textContent="50";
+  document.getElementById("leg-min").textContent="0";
+  document.getElementById("legend-title").textContent=LAYER_LABELS[layerId];
+}
+
+function switchNav(key,el){
+  document.querySelectorAll(".rail-item").forEach(b=>b.classList.remove("active"));
+  el.classList.add("active");
+  const layerId=NAV_TO_LAYER[key];
+  layerSelect.value=layerId;
+  initLayer(layerId,true);
+}
+
+map.on("click",e=>{
+  if(!currentLayer?._georaster)return;
+  const gr=currentLayer._georaster;
+  const{lat,lng}=e.latlng;
+  const{xmin,xmax,ymin,ymax,width,height,values}=gr;
+  const col=Math.floor((lng-xmin)/(xmax-xmin)*width);
+  const row=Math.floor((ymax-lat)/(ymax-ymin)*height);
+  let valText="No data";
+  if(col>=0&&col<width&&row>=0&&row<height){
+    const v=values[0][row][col];
+    if(v!==null&&!isNaN(v)&&v!==gr.noDataValue){
+      valText=layerSelect.value==="wnv_risk"?`${(v*100).toFixed(1)}`:`${Math.round(v)}`;
+    }
+  }
+  const layerId=layerSelect.value;
+  const unit=layerId==="wnv_risk"?"risk score":"mosquitoes";
+  L.popup().setLatLng(e.latlng).setContent(`
+    <div class="popup-label">Week of</div>
+    <div style="margin-bottom:6px">${weekLabel(availableWeeks[currentWeekIdx])}</div>
+    <div class="popup-label">Coordinates</div>
+    <div style="margin-bottom:6px">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+    <div class="popup-label">${LAYER_LABELS[layerId]}</div>
+    <div><span class="popup-val">${valText}</span> <span class="popup-unit">${unit}</span></div>
+  `).openOn(map);
+});
+
+layerSelect.addEventListener("change",()=>initLayer(layerSelect.value,true));
+weekSlider.addEventListener("input",()=>{
+  currentWeekIdx=parseInt(weekSlider.value);
+  updateWeekDisplay();
+  loadTif(layerSelect.value,availableWeeks[currentWeekIdx]);
+});
+playBtn.addEventListener("click",()=>{
+  if(isPlaying){
+    clearInterval(playInterval);isPlaying=false;
+    playBtn.textContent="▶ Play animation";playBtn.classList.remove("playing");
+  }else{
+    isPlaying=true;playBtn.textContent="⏹ Stop";playBtn.classList.add("playing");
+    playInterval=setInterval(()=>{
+      currentWeekIdx=(currentWeekIdx+1)%availableWeeks.length;
+      weekSlider.value=currentWeekIdx;updateWeekDisplay();
+      loadTif(layerSelect.value,availableWeeks[currentWeekIdx]);
+    },2000);
+  }
+});
+cbToggle.addEventListener("change",()=>{
+  if(availableWeeks.length)loadTif(layerSelect.value,availableWeeks[currentWeekIdx]);
+});
+
+initLayer("wnv_risk",false);
+</script>
+</body>
+</html>
