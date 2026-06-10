@@ -451,6 +451,16 @@
       </div>
     </div>
 
+    <div>
+      <div class="tile-label">Basemap</div>
+      <select id="basemap-select">
+        <option value="carto_light">Carto Light</option>
+        <option value="carto_voyager">Carto Voyager</option>
+        <option value="osm">OpenStreetMap</option>
+        <option value="esri_topo">ESRI Topo</option>
+      </select>
+    </div>
+
     <div id="status"></div>
   </div>
 
@@ -691,6 +701,19 @@ function weekLabel(week) {
 }
 function tifFilename(week) { return `X${YEAR}${String(week).padStart(2,"0")}.tif`; }
 
+function currentWeekNumber() {
+  const now = new Date();
+  const jan1 = new Date(YEAR, 0, 1);
+  const target = now.getFullYear() === YEAR ? now : new Date(YEAR, 11, 31);
+  const d = jan1.getDay();
+  const daysToMon = d === 0 ? 1 : (8 - d);
+  const firstMon = new Date(jan1);
+  firstMon.setDate(jan1.getDate() + (daysToMon % 7));
+  const diff = target - firstMon;
+  if (diff < 0) return 1;
+  return Math.min(52, Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1);
+}
+
 async function probeWeeks(layerId) {
   const path = LAYER_PATHS[layerId];
   const found = [];
@@ -703,12 +726,43 @@ async function probeWeeks(layerId) {
   return found.sort((a,b) => a-b);
 }
 
-// Light base map (OSM standard)
-const map = L.map("map", {center:[33.4,-112.07], zoom:7, zoomControl:true});
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-  maxZoom: 19
-}).addTo(map);
+const BASEMAPS = {
+  carto_light: {
+    url: "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png",
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: "abcd", maxZoom: 19
+  },
+  carto_voyager: {
+    url: "https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png",
+    attribution: '&copy; <a href="https://carto.com/">CARTO</a>',
+    subdomains: "abcd", maxZoom: 19
+  },
+  osm: {
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19
+  },
+  esri_topo: {
+    url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}",
+    attribution: '&copy; <a href="https://www.esri.com/">Esri</a>',
+    maxZoom: 18
+  }
+};
+
+// Arizona: center 34.3, -111.1 zoom 6
+const map = L.map("map", {center:[34.3,-111.1], zoom:6, zoomControl:true});
+let basemapLayer = L.tileLayer(BASEMAPS.carto_light.url, BASEMAPS.carto_light).addTo(map);
+
+function setBasemap(id) {
+  const cfg = BASEMAPS[id];
+  if (!cfg) return;
+  map.removeLayer(basemapLayer);
+  basemapLayer = L.tileLayer(cfg.url, cfg).addTo(map);
+  // Ensure basemap stays below raster layer
+  if (currentLayer) currentLayer.bringToFront();
+}
+
+document.getElementById("basemap-select").addEventListener("change", e => setBasemap(e.target.value));
 
 let currentLayer=null, availableWeeks=[], currentWeekIdx=0, playInterval=null, isPlaying=false;
 
@@ -746,6 +800,7 @@ async function loadTif(layerId, weekNum) {
     layer.addTo(map);
     layer._georaster = gr;
     currentLayer = layer;
+    layer.bringToFront();
     setStatus(`Week ${weekNum} · ${YEAR}`, "");
     updateLegend(layerId, cbToggle.checked);
     document.getElementById("stat-layer").textContent = LAYER_LABELS[layerId];
@@ -771,7 +826,12 @@ async function initLayer(layerId, preserveIdx) {
   weekSlider.max = availableWeeks.length-1;
   weekSlider.disabled = false;
   if (preserveIdx) currentWeekIdx = Math.min(currentWeekIdx, availableWeeks.length-1);
-  else currentWeekIdx = 0;
+  else {
+    const target = currentWeekNumber();
+    // Find the available week closest to the current calendar week
+    currentWeekIdx = availableWeeks.reduce((best, w, i) =>
+      Math.abs(w - target) < Math.abs(availableWeeks[best] - target) ? i : best, 0);
+  }
   weekSlider.value = currentWeekIdx;
   updateWeekDisplay();
   await loadTif(layerId, availableWeeks[currentWeekIdx]);
