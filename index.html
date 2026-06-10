@@ -657,18 +657,12 @@ function hexToRgb(hex) {
   return [parseInt(hex.slice(1,3),16), parseInt(hex.slice(3,5),16), parseInt(hex.slice(5,7),16)];
 }
 
-// WNV: values are 0–100 risk scores
-// WNV gamma: <1 stretches low values into visible color range.
-// gamma=0.4 means a value of 7 (t=0.07) renders as 0.07^0.4 ≈ 0.30 — clearly visible.
-// Colors are fully opaque (alpha=1); transparency is handled at layer level to avoid
-// tile-edge seam artifacts caused by per-pixel alpha blending.
-const WNV_GAMMA = 0.9;
+// WNV: values are 0–100 risk scores, mapped linearly from cream (low) to red (high).
 function colorWnv(val) {
   if (val === null || isNaN(val) || val === undefined) return null;
-  // Treat near-zero as nodata to keep background clean
+  // Treat near-zero as nodata to keep the basemap clean
   if (val < 0.5) return null;
-  const linear = Math.max(0, Math.min(1, val / 100));
-  const t = Math.pow(linear, WNV_GAMMA);
+  const t = Math.max(0, Math.min(1, val / 100));
   const [r,g,b] = lerpColor(hexToRgb("#FFEBD6"), hexToRgb("#C40A0A"), t);
   return `rgb(${r},${g},${b})`;
 }
@@ -693,19 +687,24 @@ function getColorFn(layerId, cb) {
   return cb ? colorMosqCB : colorMosqDefault;
 }
 
-// CDC epi-week anchor: the Sunday on or before Jan 4 of YEAR.
-// For 2026 that is Dec 29, 2025 — verified: week 22 = May 25–31 2026.
-function epiWeekAnchor(year) {
-  const jan4 = new Date(year, 0, 4);
-  const dow = jan4.getDay(); // 0=Sun
-  const anchor = new Date(jan4);
-  anchor.setDate(jan4.getDate() - dow);
-  return anchor;
+// Week numbering matches the original R pipeline: week W starts on the Monday
+// of the ISO week containing (Jan 1 + (W-1)*7). For 2026 the anchor Monday is
+// Dec 29, 2025, so week 22 = May 25 – May 31, 2026 (Mon–Sun), aligning the
+// X{year}{week}.tif raster files with the dates shown in the app.
+function weekAnchorMonday(year) {
+  const jan1 = new Date(year, 0, 1);
+  const isoDow = (jan1.getDay() + 6) % 7 + 1; // Mon=1 … Sun=7
+  const monday = new Date(jan1);
+  monday.setDate(jan1.getDate() - isoDow + 1);
+  return monday;
+}
+function weekStart(week) {
+  const start = weekAnchorMonday(YEAR);
+  start.setDate(start.getDate() + (week - 1) * 7);
+  return start;
 }
 function weekLabel(week) {
-  const anchor = epiWeekAnchor(YEAR);
-  const start = new Date(anchor);
-  start.setDate(anchor.getDate() + (week - 1) * 7);
+  const start = weekStart(week);
   const end = new Date(start); end.setDate(start.getDate() + 6);
   const M = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return start.getMonth() === end.getMonth()
@@ -717,10 +716,10 @@ function tifFilename(week) { return `X${YEAR}${String(week).padStart(2,"0")}.tif
 function currentWeekNumber() {
   const now = new Date();
   const target = now.getFullYear() === YEAR ? now : new Date(YEAR, 11, 31);
-  const anchor = epiWeekAnchor(YEAR);
+  const anchor = weekAnchorMonday(YEAR);
   const diff = target - anchor;
   if (diff < 0) return 1;
-  return Math.min(52, Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1);
+  return Math.min(53, Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1);
 }
 
 async function probeWeeks(layerId) {
@@ -801,7 +800,7 @@ async function loadTif(layerId, weekNum) {
     const colorFn = getColorFn(layerId, cbToggle.checked);
     const layer = new GeoRasterLayer({
       georaster: gr,
-      opacity: layerId === "wnv_risk" ? 0.82 : 0.8,
+      opacity: layerId === "wnv_risk" ? 1 : 0.8,
       pixelValuesToColorFn: values => {
         const v = values[0];
         if (v === gr.noDataValue || v === null || isNaN(v)) return null;
@@ -864,7 +863,7 @@ function updateLegend(layerId, cb) {
   }
   if (layerId === "wnv_risk") {
     document.getElementById("leg-max").textContent = "100";
-    document.getElementById("leg-mid").textContent = "30";
+    document.getElementById("leg-mid").textContent = "50";
     document.getElementById("leg-min").textContent = "0";
   } else {
     document.getElementById("leg-max").textContent = "100+";
