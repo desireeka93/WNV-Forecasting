@@ -454,10 +454,10 @@
     <div>
       <div class="tile-label">Basemap</div>
       <select id="basemap-select">
+        <option value="esri_topo">ESRI Topo</option>
         <option value="carto_light">Carto Light</option>
         <option value="carto_voyager">Carto Voyager</option>
         <option value="osm">OpenStreetMap</option>
-        <option value="esri_topo">ESRI Topo</option>
       </select>
     </div>
 
@@ -763,7 +763,7 @@ const BASEMAPS = {
 
 // Arizona: center 34.3, -111.1 zoom 6
 const map = L.map("map", {center:[34.15,-111.6], zoom:7, zoomControl:true});
-let basemapLayer = L.tileLayer(BASEMAPS.carto_light.url, BASEMAPS.carto_light).addTo(map);
+let basemapLayer = L.tileLayer(BASEMAPS.esri_topo.url, BASEMAPS.esri_topo).addTo(map);
 
 function setBasemap(id) {
   const cfg = BASEMAPS[id];
