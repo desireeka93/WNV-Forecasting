@@ -662,7 +662,7 @@ function hexToRgb(hex) {
 // gamma=0.4 means a value of 7 (t=0.07) renders as 0.07^0.4 ≈ 0.30 — clearly visible.
 // Colors are fully opaque (alpha=1); transparency is handled at layer level to avoid
 // tile-edge seam artifacts caused by per-pixel alpha blending.
-const WNV_GAMMA = 0.8;
+const WNV_GAMMA = 0.9;
 function colorWnv(val) {
   if (val === null || isNaN(val) || val === undefined) return null;
   // Treat near-zero as nodata to keep background clean
@@ -725,8 +725,11 @@ function currentWeekNumber() {
 
 async function probeWeeks(layerId) {
   const path = LAYER_PATHS[layerId];
+  // Clamp to current epi week + 1 so future files beyond the forecast horizon are hidden
+  const maxWeek = currentWeekNumber() + 1;
+  const weeksToProbe = WEEKS_TO_CHECK.filter(w => w <= maxWeek);
   const found = [];
-  await Promise.all(WEEKS_TO_CHECK.map(async w => {
+  await Promise.all(weeksToProbe.map(async w => {
     try {
       const r = await fetch(`${path}/${tifFilename(w)}`, {method:"HEAD"});
       if (r.ok) found.push(w);
