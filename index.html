@@ -658,11 +658,19 @@ function hexToRgb(hex) {
 }
 
 // WNV: values are 0–100 risk scores
+// WNV gamma: <1 stretches low values into visible color range.
+// gamma=0.4 means a value of 7 (t=0.07) renders as 0.07^0.4 ≈ 0.30 — clearly visible.
+// Colors are fully opaque (alpha=1); transparency is handled at layer level to avoid
+// tile-edge seam artifacts caused by per-pixel alpha blending.
+const WNV_GAMMA = 0.4;
 function colorWnv(val) {
   if (val === null || isNaN(val) || val === undefined) return null;
-  const t = Math.max(0, Math.min(1, val / 100));
+  // Treat near-zero as nodata to keep background clean
+  if (val < 0.5) return null;
+  const linear = Math.max(0, Math.min(1, val / 100));
+  const t = Math.pow(linear, WNV_GAMMA);
   const [r,g,b] = lerpColor(hexToRgb("#FFEBD6"), hexToRgb("#C40A0A"), t);
-  return `rgba(${r},${g},${b},${t.toFixed(3)})`;
+  return `rgb(${r},${g},${b})`;
 }
 function colorMosqDefault(val) {
   if (val === null || isNaN(val) || val === undefined) return null;
@@ -750,7 +758,7 @@ const BASEMAPS = {
 };
 
 // Arizona: center 34.3, -111.1 zoom 6
-const map = L.map("map", {center:[34.3,-111.1], zoom:6, zoomControl:true});
+const map = L.map("map", {center:[34.3,-111.1], zoom:7, zoomControl:true});
 let basemapLayer = L.tileLayer(BASEMAPS.carto_light.url, BASEMAPS.carto_light).addTo(map);
 
 function setBasemap(id) {
@@ -789,13 +797,13 @@ async function loadTif(layerId, weekNum) {
     const colorFn = getColorFn(layerId, cbToggle.checked);
     const layer = new GeoRasterLayer({
       georaster: gr,
-      opacity: layerId === "wnv_risk" ? 1.0 : 0.8,
+      opacity: layerId === "wnv_risk" ? 0.82 : 0.8,
       pixelValuesToColorFn: values => {
         const v = values[0];
         if (v === gr.noDataValue || v === null || isNaN(v)) return null;
         return colorFn(v);
       },
-      resolution: 256
+      resolution: 512
     });
     layer.addTo(map);
     layer._georaster = gr;
@@ -850,9 +858,15 @@ function updateLegend(layerId, cb) {
       : (cb ? colorMosqCB(t*100) : colorMosqDefault(t*100));
     if (color) { ctx.fillStyle = color; ctx.fillRect(0, i, canvas.width, 1); }
   }
-  document.getElementById("leg-max").textContent = layerId === "wnv_risk" ? "100" : "100+";
-  document.getElementById("leg-mid").textContent = "50";
-  document.getElementById("leg-min").textContent = "0";
+  if (layerId === "wnv_risk") {
+    document.getElementById("leg-max").textContent = "100";
+    document.getElementById("leg-mid").textContent = "30";
+    document.getElementById("leg-min").textContent = "0";
+  } else {
+    document.getElementById("leg-max").textContent = "100+";
+    document.getElementById("leg-mid").textContent = "50";
+    document.getElementById("leg-min").textContent = "0";
+  }
   document.getElementById("legend-title").textContent = LAYER_LABELS[layerId];
 }
 
