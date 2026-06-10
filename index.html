@@ -662,7 +662,7 @@ function hexToRgb(hex) {
 // gamma=0.4 means a value of 7 (t=0.07) renders as 0.07^0.4 ≈ 0.30 — clearly visible.
 // Colors are fully opaque (alpha=1); transparency is handled at layer level to avoid
 // tile-edge seam artifacts caused by per-pixel alpha blending.
-const WNV_GAMMA = 0.4;
+const WNV_GAMMA = 0.8;
 function colorWnv(val) {
   if (val === null || isNaN(val) || val === undefined) return null;
   // Treat near-zero as nodata to keep background clean
@@ -693,15 +693,20 @@ function getColorFn(layerId, cb) {
   return cb ? colorMosqCB : colorMosqDefault;
 }
 
+// CDC epi-week anchor: the Sunday on or before Jan 4 of YEAR.
+// For 2026 that is Dec 29, 2025 — verified: week 22 = May 25–31 2026.
+function epiWeekAnchor(year) {
+  const jan4 = new Date(year, 0, 4);
+  const dow = jan4.getDay(); // 0=Sun
+  const anchor = new Date(jan4);
+  anchor.setDate(jan4.getDate() - dow);
+  return anchor;
+}
 function weekLabel(week) {
-  const jan1 = new Date(YEAR, 0, 1);
-  const d = jan1.getDay();
-  const daysToMon = d === 0 ? 1 : (8 - d);
-  const firstMon = new Date(jan1);
-  firstMon.setDate(jan1.getDate() + (daysToMon % 7));
-  const start = new Date(firstMon);
-  start.setDate(firstMon.getDate() + (week-1)*7);
-  const end = new Date(start); end.setDate(start.getDate()+6);
+  const anchor = epiWeekAnchor(YEAR);
+  const start = new Date(anchor);
+  start.setDate(anchor.getDate() + (week - 1) * 7);
+  const end = new Date(start); end.setDate(start.getDate() + 6);
   const M = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
   return start.getMonth() === end.getMonth()
     ? `${M[start.getMonth()]} ${start.getDate()}–${end.getDate()}`
@@ -711,13 +716,9 @@ function tifFilename(week) { return `X${YEAR}${String(week).padStart(2,"0")}.tif
 
 function currentWeekNumber() {
   const now = new Date();
-  const jan1 = new Date(YEAR, 0, 1);
   const target = now.getFullYear() === YEAR ? now : new Date(YEAR, 11, 31);
-  const d = jan1.getDay();
-  const daysToMon = d === 0 ? 1 : (8 - d);
-  const firstMon = new Date(jan1);
-  firstMon.setDate(jan1.getDate() + (daysToMon % 7));
-  const diff = target - firstMon;
+  const anchor = epiWeekAnchor(YEAR);
+  const diff = target - anchor;
   if (diff < 0) return 1;
   return Math.min(52, Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1);
 }
@@ -758,7 +759,7 @@ const BASEMAPS = {
 };
 
 // Arizona: center 34.3, -111.1 zoom 6
-const map = L.map("map", {center:[34.3,-111.1], zoom:7, zoomControl:true});
+const map = L.map("map", {center:[34.15,-111.6], zoom:7, zoomControl:true});
 let basemapLayer = L.tileLayer(BASEMAPS.carto_light.url, BASEMAPS.carto_light).addTo(map);
 
 function setBasemap(id) {
