@@ -141,6 +141,24 @@
   }
   select:focus { outline: none; border-color: var(--blue); }
 
+  /* ── Layer button rail (replaces the dropdown) ── */
+  .layer-rail { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .layer-btn {
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+    padding: 12px 6px; font: inherit;
+    border: 1px solid var(--border); border-radius: 12px;
+    background: #f5f7fa; color: var(--muted); cursor: pointer;
+    transition: background .15s, border-color .15s, color .15s, box-shadow .15s;
+  }
+  .layer-btn:hover { border-color: #b9a8f0; color: var(--text); }
+  .layer-btn.active {
+    background: #efeafe; border-color: #b9a8f0; color: #5b3fb0;
+    box-shadow: 0 1px 2px rgba(91,63,176,0.12);
+  }
+  .layer-btn:focus-visible { outline: 2px solid #8b6fd6; outline-offset: 1px; }
+  .layer-ico { font-size: 20px; line-height: 1; }
+  .layer-lab { font-size: 10px; font-weight: 600; letter-spacing: 0.02em; text-align: center; line-height: 1.15; }
+
   .toggle-row { display: flex; align-items: center; gap: 8px; }
   .toggle-wrap { position: relative; width: 30px; height: 16px; flex-shrink: 0; }
   .toggle-wrap input { opacity: 0; width: 0; height: 0; position: absolute; }
@@ -464,7 +482,14 @@
   <!-- Controls tile -->
   <div class="tile tile-controls">
     <div class="tile-label">Data layer</div>
-    <select id="layer-select">
+    <div class="layer-rail" id="layer-rail">
+      <button type="button" class="layer-btn active" data-layer="wnv_risk"><span class="layer-ico">⚠</span><span class="layer-lab">WNV Risk</span></button>
+      <button type="button" class="layer-btn" data-layer="mosquito_abundance"><span class="layer-ico">🦟</span><span class="layer-lab">Mosquito</span></button>
+      <button type="button" class="layer-btn" data-layer="culex_quinque"><span class="layer-ico">Cq</span><span class="layer-lab">C. quinque</span></button>
+      <button type="button" class="layer-btn" data-layer="culex_tarsalis"><span class="layer-ico">Ct</span><span class="layer-lab">C. tarsalis</span></button>
+    </div>
+    <!-- hidden: keeps existing layerSelect.value references working -->
+    <select id="layer-select" style="display:none">
       <option value="wnv_risk">WNV Risk</option>
       <option value="mosquito_abundance">Mosquito Abundance</option>
       <option value="culex_quinque">Culex quinquefasciatus</option>
@@ -481,6 +506,28 @@
         </label>
         <span class="toggle-label">Colorblind friendly</span>
       </div>
+      <div class="toggle-row" style="margin-top:10px;">
+        <label class="toggle-wrap">
+          <input type="checkbox" id="pools-toggle" checked>
+          <div class="toggle-track"></div>
+          <div class="toggle-thumb"></div>
+        </label>
+        <span class="toggle-label">Positive pools (season to date)</span>
+      </div>
+    </div>
+
+    <div id="pool-controls">
+      <div class="tile-label">Positives shown</div>
+      <select id="pool-filter">
+        <option value="all">WNV + SLEV</option>
+        <option value="WNV">WNV only</option>
+        <option value="SLEV">SLEV only</option>
+      </select>
+      <div style="display:flex; gap:14px; margin-top:9px; font-size:11px; color:var(--muted);">
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#b91c1c;border:1px solid #fff;vertical-align:middle;"></span> WNV</span>
+        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#6d28d9;border:1px solid #fff;vertical-align:middle;"></span> SLEV</span>
+      </div>
+      <div id="pool-count" style="font-size:10px; color:var(--muted); margin-top:6px;"></div>
     </div>
 
     <div>
@@ -759,21 +806,42 @@ function currentWeekNumber() {
   return Math.min(53, Math.floor(diff / (7 * 24 * 60 * 60 * 1000)) + 1);
 }
 
+// Fetch with an abort timeout so a stalled request can never hang the app.
+function fetchWithTimeout(url, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { ...opts, signal: ctrl.signal }).finally(() => clearTimeout(id));
+}
+
 const probeCache = new Map(); // layerId -> sorted week list (per session)
 async function probeWeeks(layerId) {
   if (probeCache.has(layerId)) return probeCache.get(layerId);
   const path = LAYER_PATHS[layerId];
   // Clamp to current epi week + 1 so future files beyond the forecast horizon are hidden
   const maxWeek = currentWeekNumber() + 1;
-  const weeksToProbe = WEEKS_TO_CHECK.filter(w => w <= maxWeek);
+  const weeks = WEEKS_TO_CHECK.filter(w => w <= maxWeek);
   const found = [];
-  await Promise.all(weeksToProbe.map(async w => {
-    try {
-      const r = await fetch(`${path}/${tifFilename(w)}`, {method:"HEAD"});
-      if (r.ok) found.push(w);
-    } catch(e) {}
-  }));
+
+  // Limited concurrency (not all at once): friendlier to single-threaded/dev servers,
+  // which can otherwise stall when hit with a burst of parallel HEAD requests.
+  const CONCURRENCY = 5;
+  let next = 0;
+  async function worker() {
+    while (next < weeks.length) {
+      const w = weeks[next++];
+      const url = `${path}/${tifFilename(w)}`;
+      try {
+        const r = await fetchWithTimeout(url, { method: "HEAD" }, 8000);
+        if (r.ok) found.push(w);
+      } catch (e) { /* missing, blocked, or timed out — skip */ }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, weeks.length) }, worker));
+
   found.sort((a,b) => a-b);
+  if (found.length === 0) {
+    console.warn(`No ${layerId} rasters found under "${path}/". Probed weeks 1–${maxWeek}, e.g. ${path}/${tifFilename(maxWeek)}`);
+  }
   probeCache.set(layerId, found);
   return found;
 }
@@ -974,7 +1042,12 @@ async function initLayer(layerId, preserveIdx) {
   setStatus("Scanning weeks…","loading");
   weekSlider.disabled = true;
   availableWeeks = await probeWeeks(layerId);
-  if (!availableWeeks.length) { setStatus("No data found","error"); return; }
+  if (!availableWeeks.length) {
+    setStatus(`No files in ${LAYER_PATHS[layerId]}/`, "error");
+    weekDisplay.textContent = "No data";
+    weekCounter.textContent = "";
+    return;
+  }
   weekSlider.max = availableWeeks.length-1;
   weekSlider.disabled = false;
   if (preserveIdx) currentWeekIdx = Math.min(currentWeekIdx, availableWeeks.length-1);
@@ -987,6 +1060,7 @@ async function initLayer(layerId, preserveIdx) {
   weekSlider.value = currentWeekIdx;
   updateWeekDisplay();
   await loadTif(layerId, availableWeeks[currentWeekIdx]);
+  if (typeof renderPools === "function") renderPools();
 }
 
 function updateLegend(layerId, cb) {
@@ -1046,10 +1120,23 @@ map.on("click", e => {
 });
 
 layerSelect.addEventListener("change", () => initLayer(layerSelect.value, true));
+
+// Layer button rail → drives the (hidden) select + reloads the layer
+document.querySelectorAll(".layer-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const layerId = btn.dataset.layer;
+    if (layerId === layerSelect.value && btn.classList.contains("active")) return;
+    document.querySelectorAll(".layer-btn").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    layerSelect.value = layerId;
+    initLayer(layerId, true);
+  });
+});
 weekSlider.addEventListener("input", () => {
   currentWeekIdx = parseInt(weekSlider.value);
   updateWeekDisplay();
   loadTif(layerSelect.value, availableWeeks[currentWeekIdx]);
+  renderPools();
 });
 playBtn.addEventListener("click", () => {
   if (isPlaying) {
@@ -1061,6 +1148,7 @@ playBtn.addEventListener("click", () => {
       currentWeekIdx = (currentWeekIdx+1) % availableWeeks.length;
       weekSlider.value = currentWeekIdx; updateWeekDisplay();
       loadTif(layerSelect.value, availableWeeks[currentWeekIdx]);
+      renderPools();
     }, 2000);
   }
 });
@@ -1071,6 +1159,168 @@ cbToggle.addEventListener("change", () => {
 document.getElementById("stat-year").textContent = YEAR;
 document.getElementById("year-pill").textContent = YEAR;
 initLayer("wnv_risk", false);
+
+
+/* ═══════════════════════════════════════════════════
+   POSITIVE POOLS  (lab-confirmed mosquito pool detections)
+   Reads a CSV (or TSV) export with the standard MAVDB/ADHS column
+   headers. To update: append new confirmed rows to the file and commit.
+   Points are shown cumulatively through the selected forecast week.
+═══════════════════════════════════════════════════ */
+const POOLS_PATH = "dbase/app/pools.csv";
+const POOL_COLORS = { WNV: "#b91c1c", SLEV: "#6d28d9", OTHER: "#475569" };
+
+// Dedicated pane so pool dots always sit above the raster image overlay.
+map.createPane("pools");
+map.getPane("pools").style.zIndex = 650;
+const poolLayer = L.layerGroup([], { pane: "pools" }).addTo(map);
+
+const poolsToggle = document.getElementById("pools-toggle");
+const poolFilter  = document.getElementById("pool-filter");
+const poolCountEl = document.getElementById("pool-count");
+
+let poolRecords = null; // array of deduped pool objects, or [] if none/failed
+
+// Tokenize delimited text into rows of fields. Auto-detects comma vs tab from the
+// header, and handles quoted fields containing the delimiter, embedded newlines,
+// and doubled "" escapes — so values like "Maricopa County (Arizona, USA)" stay intact.
+function parseDelimited(text) {
+  const nl = text.indexOf("\n");
+  const firstLine = nl < 0 ? text : text.slice(0, nl);
+  const delim = firstLine.indexOf("\t") >= 0 ? "\t" : ",";
+  const rows = [];
+  let field = "", row = [], inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i+1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === delim) {
+      row.push(field); field = "";
+    } else if (c === "\n") {
+      row.push(field); rows.push(row); row = []; field = "";
+    } else if (c !== "\r") {
+      field += c;
+    }
+  }
+  if (field.length > 0 || row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+
+async function loadPools() {
+  try {
+    const res = await fetchWithTimeout(POOLS_PATH, {}, 8000);
+    if (!res.ok) throw new Error(POOLS_PATH + " -> " + res.status);
+    const text = await res.text();
+    poolRecords = parsePools(text);
+    if (poolRecords.length === 0) console.warn(`No usable rows in ${POOLS_PATH}`);
+  } catch (e) {
+    poolRecords = [];
+    console.warn("Positive pools not loaded:", e.message);
+  }
+  renderPools();
+}
+
+function parsePools(text) {
+  const rows = parseDelimited(text);
+  if (rows.length < 2) return [];
+  const header = rows[0].map(h => h.trim());
+  const idx = {};
+  header.forEach((h, i) => { idx[h] = i; });
+  const need = ["longitude","latitude","disease_week","test_target"];
+  if (need.some(k => idx[k] === undefined)) {
+    console.warn("Pools file is missing expected columns:", need.filter(k => idx[k] === undefined));
+    return [];
+  }
+  const get = (cols, key) => { const i = idx[key]; return i === undefined ? "" : (cols[i] || "").trim(); };
+
+  // One marker per physical pool (pool_id); a pool can be positive for >1 pathogen.
+  const byPool = new Map();
+  for (let r = 1; r < rows.length; r++) {
+    const cols = rows[r];
+    const lat = parseFloat(get(cols, "latitude"));
+    const lng = parseFloat(get(cols, "longitude"));
+    if (!isFinite(lat) || !isFinite(lng)) continue;
+    const status = get(cols, "test_status").toLowerCase();
+    if (status && status !== "confirmed") continue; // keep confirmed positives only
+    const target = get(cols, "test_target").toUpperCase() || "OTHER";
+    const key = get(cols, "pool_id") || `${lat},${lng},${get(cols,"collection_date")}`;
+    let rec = byPool.get(key);
+    if (!rec) {
+      rec = {
+        lat, lng,
+        week: parseInt(get(cols, "disease_week"), 10) || 0,
+        date: get(cols, "collection_date"),
+        species: get(cols, "species"),
+        count: parseInt(get(cols, "num_count"), 10) || null,
+        site: get(cols, "site_name") || get(cols, "name") || get(cols, "site_code"),
+        city: get(cols, "calculated_city") || get(cols, "city"),
+        county: (get(cols, "calculated_county") || "").replace(/ \(.*\)$/, ""),
+        agency: get(cols, "agency_code"),
+        targets: new Set(),
+        methods: new Set()
+      };
+      byPool.set(key, rec);
+    }
+    rec.targets.add(target);
+    const m = get(cols, "test_method"); if (m) rec.methods.add(m);
+  }
+  return Array.from(byPool.values());
+}
+
+function poolColor(targets) {
+  if (targets.has("WNV")) return POOL_COLORS.WNV;
+  if (targets.has("SLEV")) return POOL_COLORS.SLEV;
+  return POOL_COLORS.OTHER;
+}
+
+function renderPools() {
+  poolLayer.clearLayers();
+  poolCountEl.textContent = "";
+  if (!poolRecords || poolRecords.length === 0) return;
+  if (!poolsToggle.checked) { document.getElementById("pool-controls").style.opacity = 0.45; return; }
+  document.getElementById("pool-controls").style.opacity = 1;
+
+  const selectedWeek = availableWeeks.length ? availableWeeks[currentWeekIdx] : 53;
+  const filter = poolFilter.value; // all | WNV | SLEV
+  let shown = 0;
+
+  poolRecords.forEach(rec => {
+    if (rec.week > selectedWeek) return;                 // cumulative season-to-date
+    if (filter !== "all" && !rec.targets.has(filter)) return;
+    const color = poolColor(rec.targets);
+    const radius = Math.max(4, Math.min(13, 4 + Math.sqrt(rec.count || 1)));
+    const marker = L.circleMarker([rec.lat, rec.lng], {
+      pane: "pools",
+      radius,
+      color: "#ffffff", weight: 1,
+      fillColor: color, fillOpacity: 0.9
+    });
+    const targetsTxt = Array.from(rec.targets).join(", ");
+    const methodsTxt = Array.from(rec.methods).join(", ");
+    marker.bindPopup(`
+      <div class="pp-head" style="font-weight:700;margin-bottom:4px;">${rec.site || "Trap site"}</div>
+      <div style="color:#6b7280;font-size:11px;margin-bottom:4px;">${[rec.city, rec.county].filter(Boolean).join(", ")}</div>
+      <div><b>${targetsTxt}</b> positive${rec.targets.size>1 ? " (co-detection)" : ""}</div>
+      <div>${rec.species}${rec.count ? ` — ${rec.count} pooled` : ""}</div>
+      <div style="color:#6b7280;font-size:11px;margin-top:4px;">${rec.date} · week ${rec.week}</div>
+      <div style="color:#6b7280;font-size:11px;">${rec.agency}${methodsTxt ? " · " + methodsTxt : ""}</div>
+    `, { maxWidth: 260 });
+    marker.addTo(poolLayer);
+    shown++;
+  });
+
+  const total = poolRecords.length;
+  poolCountEl.textContent = `${shown} of ${total} positive pools through week ${selectedWeek}`;
+}
+
+poolsToggle.addEventListener("change", renderPools);
+poolFilter.addEventListener("change", renderPools);
+loadPools();
 
 
 /* ═══════════════════════════════════════════════════
