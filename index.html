@@ -816,6 +816,15 @@ function setBasemap(id) {
 
 document.getElementById("basemap-select").addEventListener("change", e => setBasemap(e.target.value));
 
+// Leaflet must recompute its size when the container settles (mobile first paint),
+// when the device rotates, or when the window resizes — otherwise tiles can render
+// blank/gray because the map measured a zero-height container.
+function refreshMapSize() { if (map) map.invalidateSize(); }
+window.addEventListener("resize", refreshMapSize);
+window.addEventListener("orientationchange", () => setTimeout(refreshMapSize, 250));
+window.addEventListener("load", () => setTimeout(refreshMapSize, 200));
+setTimeout(refreshMapSize, 300);
+
 let currentLayer=null, currentGeoraster=null, availableWeeks=[], currentWeekIdx=0, playInterval=null, isPlaying=false;
 
 const layerSelect = document.getElementById("layer-select");
@@ -845,49 +854,73 @@ function getGeoraster(url) {
   return p;
 }
 
-// Geographic bounds for L.imageOverlay. Handles WGS84 (4326) and Web Mercator (3857);
-// returns null for other projections so the caller can fall back to GeoRasterLayer.
-function rasterBoundsLatLng(gr) {
-  const proj = gr.projection;
-  if (!proj || proj === 4326) {
-    return L.latLngBounds([gr.ymin, gr.xmin], [gr.ymax, gr.xmax]);
-  }
-  if (proj === 3857 || proj === 900913) {
-    const sw = L.Projection.SphericalMercator.unproject(L.point(gr.xmin, gr.ymin));
-    const ne = L.Projection.SphericalMercator.unproject(L.point(gr.xmax, gr.ymax));
-    return L.latLngBounds(sw, ne);
-  }
-  return null;
-}
+// Web Mercator latitude helpers (unit sphere; constant cancels in the ratio below).
+function latToMercY(lat) { const s = Math.sin(lat*Math.PI/180); return 0.5*Math.log((1+s)/(1-s)); }
+function mercYToLat(y)   { return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/Math.PI; }
 
-// Paint the full raster into one canvas. Row 0 of the data is the north edge,
-// which is how imageOverlay expects the image, so no vertical flip is needed.
-function renderRasterDataURL(gr, layerId, cb) {
+// Build a single image overlay for one raster: returns { dataURL, bounds } or null
+// (null = exotic projection -> caller falls back to GeoRasterLayer).
+// Cached by url|layer|palette.
+function buildOverlay(gr, layerId, cb) {
   const key = `${gr.__url}|${layerId}|${cb}`;
   if (overlayCache.has(key)) return overlayCache.get(key);
-  const { width, height, noDataValue } = gr;
+
+  const proj = gr.projection;
+  if (proj && proj !== 4326 && proj !== 3857 && proj !== 900913) return null;
+
+  const { width: srcW, height: srcH, noDataValue, xmin, xmax, ymin, ymax } = gr;
   const band = gr.values[0];
   const colorFn = getColorFn(layerId, cb);
-  const canvas = document.createElement("canvas");
-  canvas.width = width; canvas.height = height;
-  const ctx = canvas.getContext("2d");
-  const img = ctx.createImageData(width, height);
-  const d = img.data;
-  for (let row = 0; row < height; row++) {
+
+  // Colorize the source grid once (north-up: row 0 = north edge).
+  const rowBytes = srcW * 4;
+  const srcBuf = new Uint8ClampedArray(srcW * srcH * 4);
+  for (let row = 0; row < srcH; row++) {
     const rr = band[row];
-    let p = row * width * 4;
-    for (let col = 0; col < width; col++, p += 4) {
+    let p = row * rowBytes;
+    for (let col = 0; col < srcW; col++, p += 4) {
       const v = rr[col];
-      if (v === null || v === undefined || isNaN(v) || v === noDataValue) { d[p+3] = 0; continue; }
+      if (v === null || v === undefined || isNaN(v) || v === noDataValue) { srcBuf[p+3] = 0; continue; }
       const c = colorFn(v);
-      if (!c) { d[p+3] = 0; continue; }
-      d[p] = c[0]; d[p+1] = c[1]; d[p+2] = c[2]; d[p+3] = Math.round(c[3] * 255);
+      if (!c) { srcBuf[p+3] = 0; continue; }
+      srcBuf[p] = c[0]; srcBuf[p+1] = c[1]; srcBuf[p+2] = c[2]; srcBuf[p+3] = Math.round(c[3] * 255);
     }
   }
-  ctx.putImageData(img, 0, 0);
-  const url = canvas.toDataURL("image/png");
-  overlayCache.set(key, url);
-  return url;
+
+  let outBuf, outW = srcW, outH = srcH, bounds;
+
+  if (proj === 3857 || proj === 900913) {
+    // Already Web Mercator: image is correct as-is; pin the meter extent's latlng corners.
+    outBuf = srcBuf;
+    const sw = L.Projection.SphericalMercator.unproject(L.point(xmin, ymin));
+    const ne = L.Projection.SphericalMercator.unproject(L.point(xmax, ymax));
+    bounds = L.latLngBounds(sw, ne);
+  } else {
+    // WGS84 lon/lat. Resample rows so they are evenly spaced in Mercator-y, matching how
+    // Leaflet interpolates the overlay between its corners. Columns are unchanged because
+    // Mercator-x is linear in longitude. This removes the north-south offset.
+    outBuf = new Uint8ClampedArray(outW * outH * 4);
+    const yTop = latToMercY(ymax), yBot = latToMercY(ymin);
+    for (let oy = 0; oy < outH; oy++) {
+      const my = yTop + ((oy + 0.5) / outH) * (yBot - yTop);
+      const lat = mercYToLat(my);
+      let sr = Math.floor((ymax - lat) / (ymax - ymin) * srcH);
+      if (sr < 0) sr = 0; else if (sr >= srcH) sr = srcH - 1;
+      outBuf.set(srcBuf.subarray(sr * rowBytes, sr * rowBytes + rowBytes), oy * rowBytes);
+    }
+    bounds = L.latLngBounds([ymin, xmin], [ymax, xmax]);
+  }
+
+  const canvas = document.createElement("canvas");
+  canvas.width = outW; canvas.height = outH;
+  const ctx = canvas.getContext("2d");
+  const imgData = ctx.createImageData(outW, outH);
+  imgData.data.set(outBuf);
+  ctx.putImageData(imgData, 0, 0);
+
+  const result = { dataURL: canvas.toDataURL("image/png"), bounds };
+  overlayCache.set(key, result);
+  return result;
 }
 
 async function loadTif(layerId, weekNum) {
@@ -900,14 +933,12 @@ async function loadTif(layerId, weekNum) {
 
     if (currentLayer) { map.removeLayer(currentLayer); currentLayer = null; }
 
-    const bounds = rasterBoundsLatLng(gr);
-    if (bounds) {
-      // Single image overlay — alpha is baked per pixel, so layer opacity stays 1
-      // and there are no inter-tile seams.
-      const dataURL = renderRasterDataURL(gr, layerId, cb);
-      currentLayer = L.imageOverlay(dataURL, bounds, { opacity: 1, interactive: false });
+    const bounds_built = buildOverlay(gr, layerId, cb);
+    if (bounds_built) {
+      // Single Mercator-aligned image — alpha baked per pixel (opacity 1), no tile seams.
+      currentLayer = L.imageOverlay(bounds_built.dataURL, bounds_built.bounds, { opacity: 1, interactive: false });
     } else {
-      // Unknown projection: fall back to GeoRasterLayer, which reprojects on the fly.
+      // Exotic projection: fall back to GeoRasterLayer, which reprojects on the fly.
       const colorFn = getColorFn(layerId, cb);
       currentLayer = new GeoRasterLayer({
         georaster: gr,
