@@ -771,6 +771,14 @@ function getColorFn(layerId, cb) {
 }
 function rgbaToCss(a) { return a ? `rgba(${a[0]},${a[1]},${a[2]},${a[3]})` : null; }
 
+// True for missing data: null/NaN/Infinity, the file's declared NoData, or an
+// out-of-range fill value such as the float32 sentinel (~-3.4e38) that some rasters
+// carry without flagging it. Real abundance/risk values are tiny by comparison.
+function isNoData(v, noDataValue) {
+  return v === null || v === undefined || isNaN(v) || !isFinite(v)
+      || v === noDataValue || Math.abs(v) >= 1e20;
+}
+
 // Week numbering matches the original R pipeline: week W starts on the Monday
 // of the ISO week containing (Jan 1 + (W-1)*7). For 2026 the anchor Monday is
 // Dec 29, 2025, so week 22 = May 25 – May 31, 2026 (Mon–Sun), aligning the
@@ -948,7 +956,7 @@ function buildOverlay(gr, layerId, cb) {
     let p = row * rowBytes;
     for (let col = 0; col < srcW; col++, p += 4) {
       const v = rr[col];
-      if (v === null || v === undefined || isNaN(v) || v === noDataValue) { srcBuf[p+3] = 0; continue; }
+      if (isNoData(v, noDataValue)) { srcBuf[p+3] = 0; continue; }
       const c = colorFn(v);
       if (!c) { srcBuf[p+3] = 0; continue; }
       srcBuf[p] = c[0]; srcBuf[p+1] = c[1]; srcBuf[p+2] = c[2]; srcBuf[p+3] = Math.round(c[3] * 255);
@@ -1014,7 +1022,7 @@ async function loadTif(layerId, weekNum) {
         resolution: 256,
         pixelValuesToColorFn: values => {
           const v = values[0];
-          if (v === gr.noDataValue || v === null || isNaN(v)) return null;
+          if (isNoData(v, gr.noDataValue)) return null;
           return rgbaToCss(colorFn(v));
         }
       });
@@ -1101,10 +1109,11 @@ map.on("click", e => {
   let valText = "No data";
   if (col>=0 && col<width && row>=0 && row<height) {
     const v = values[0][row][col];
-    if (v !== null && !isNaN(v) && v !== gr.noDataValue) {
+    if (!isNoData(v, gr.noDataValue)) {
+      const vv = Math.max(0, v); // clamp small negative artifacts to zero
       valText = layerSelect.value === "wnv_risk"
-        ? `${v.toFixed(1)}`
-        : `${Math.round(v)}`;
+        ? `${vv.toFixed(1)}`
+        : `${Math.round(vv)}`;
     }
   }
   const layerId = layerSelect.value;
