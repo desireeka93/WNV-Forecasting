@@ -124,13 +124,9 @@
   /* ── Map tile ── */
   #map { width: 100%; height: 100%; }
 
-  /* Draw the forecast raster with sharp cell edges (nearest-neighbor) instead of
-     the browser's default bilinear blur when the image is scaled up on zoom. */
-  .raster-overlay {
-    image-rendering: -webkit-optimize-contrast;
-    image-rendering: crisp-edges;
-    image-rendering: pixelated;
-  }
+  /* Smooth display; the raster is high-quality upsampled at build time so it reads
+     refined rather than hard-blocky or mushy. */
+  .raster-overlay { image-rendering: auto; }
 
   /* ── Controls ── */
   select {
@@ -1042,9 +1038,9 @@ function buildOverlay(gr, layerId, cb) {
     let p = row * rowBytes;
     for (let col = 0; col < srcW; col++, p += 4) {
       const v = rr[col];
-      if (isNoData(v, noDataValue)) { srcBuf[p+3] = 0; continue; }
+      if (isNoData(v, noDataValue)) { srcBuf[p]=255; srcBuf[p+1]=255; srcBuf[p+2]=255; srcBuf[p+3]=0; continue; }
       const c = colorFn(v);
-      if (!c) { srcBuf[p+3] = 0; continue; }
+      if (!c) { srcBuf[p]=255; srcBuf[p+1]=255; srcBuf[p+2]=255; srcBuf[p+3]=0; continue; }
       let aMul = 1;
       if (applyMask) {
         const lng = xmin + (col + 0.5) / srcW * spanX;
@@ -1086,7 +1082,22 @@ function buildOverlay(gr, layerId, cb) {
   imgData.data.set(outBuf);
   ctx.putImageData(imgData, 0, 0);
 
-  const result = { dataURL: canvas.toDataURL("image/png"), bounds };
+  // Upsample once with high-quality (bicubic-class) smoothing so mid-zoom reads
+  // refined instead of hard-blocky, without the mush of naive bilinear. Capped so
+  // the baked image stays a sane size.
+  let outCanvas = canvas;
+  const scale = Math.min(4, Math.floor(2400 / Math.max(outW, outH)));
+  if (scale >= 2) {
+    outCanvas = document.createElement("canvas");
+    outCanvas.width = outW * scale;
+    outCanvas.height = outH * scale;
+    const octx = outCanvas.getContext("2d");
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = "high";
+    octx.drawImage(canvas, 0, 0, outCanvas.width, outCanvas.height);
+  }
+
+  const result = { dataURL: outCanvas.toDataURL("image/png"), bounds };
   overlayCache.set(key, result);
   return result;
 }
