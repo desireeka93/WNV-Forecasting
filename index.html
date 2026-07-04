@@ -525,7 +525,7 @@
 
       <div id="pool-lock">
         <div style="display:flex; gap:6px;">
-          <input type="password" id="pool-code" placeholder="AZWNV"
+          <input type="password" id="pool-code" placeholder="Access code"
                  style="flex:1; min-width:0; background:#f5f7fa; border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; color:var(--text);">
           <button type="button" id="pool-unlock" class="btn-secondary" style="padding:7px 12px;">Unlock</button>
         </div>
@@ -752,14 +752,20 @@ const WEEKS_TO_CHECK = Array.from({length: 52}, (_, i) => i + 1);
 
 // ── Distance-accumulation mask (dbase/app/mask.tif) ──
 // Higher distance from suitable habitat → more masked. The weight is a lognormal
-// survival curve fit to the distribution of accumulation values at WNV positives:
-// weight 1 at distance 0, 0.5 at the median, →0 in the tail. Update these two
-// numbers whenever you recompute the distribution. Assumes mask.tif is EPSG:4326.
-const MASK_PATH   = "dbase/app/mask.tif";
-const MASK_MEDIAN = 73.77121;   // median accumulation value at WNV positives
-const MASK_MEAN   = 145.28429;  // mean accumulation value at WNV positives
-const MASK_MU     = Math.log(MASK_MEDIAN);
-const MASK_SIGMA  = Math.sqrt(2 * Math.max(1e-6, Math.log(MASK_MEAN / MASK_MEDIAN)));
+// survival curve fit to the distribution of mask.tif accumulation values at each
+// layer's occurrences: weight 1 at distance 0, 0.5 at the median, →0 in the tail.
+// Update {median, mean} per layer to recalibrate. Assumes mask.tif is EPSG:4326.
+const MASK_PATH = "dbase/app/mask.tif";
+const MASK_STATS = {
+  wnv_risk:           { median: 73.77121, mean: 145.28429 }, // WNV positives
+  mosquito_abundance: { median: 89.12881, mean: 198.53718 }, // combined Culex
+  culex_quinque:      { median: 90.30016, mean: 197.02393 }, // Cx. quinquefasciatus
+  culex_tarsalis:     { median: 86.75278, mean: 203.35310 }  // Cx. tarsalis
+};
+function maskParams(layerId) {
+  const s = MASK_STATS[layerId] || MASK_STATS.wnv_risk;
+  return { mu: Math.log(s.median), sigma: Math.sqrt(2 * Math.max(1e-6, Math.log(s.mean / s.median))) };
+}
 
 // Access-code gate for the sensitive WNV occurrence points.
 // NOTE: client-side gating is obscurity, not security — set your own code.
@@ -830,10 +836,10 @@ function erf(x) {
 }
 function normalCDF(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
 
-// Survival weight in [0,1]: 1 near distance 0, 0.5 at the positives' median, →0 far out.
-function maskWeight(d) {
+// Survival weight in [0,1]: 1 near distance 0, 0.5 at the layer's median, →0 far out.
+function maskWeight(d, mu, sigma) {
   if (d === null || !(d > 0)) return 1;
-  const z = (Math.log(d) - MASK_MU) / MASK_SIGMA;
+  const z = (Math.log(d) - mu) / sigma;
   return 1 - normalCDF(z);
 }
 
@@ -1025,8 +1031,9 @@ function buildOverlay(gr, layerId, cb) {
   const { width: srcW, height: srcH, noDataValue, xmin, xmax, ymin, ymax } = gr;
   const band = gr.values[0];
   const colorFn = getColorFn(layerId, cb);
-  // Mask applies to all raster layers. (Requires lon/lat geometry.)
+  // Mask applies to all raster layers, calibrated per layer. (Requires lon/lat geometry.)
   const applyMask = maskActive && maskGeoraster && !(proj === 3857 || proj === 900913);
+  const { mu: maskMu, sigma: maskSigma } = maskParams(layerId);
   const spanX = xmax - xmin, spanY = ymax - ymin;
 
   // Colorize the source grid once (north-up: row 0 = north edge).
@@ -1044,7 +1051,7 @@ function buildOverlay(gr, layerId, cb) {
       if (applyMask) {
         const lng = xmin + (col + 0.5) / srcW * spanX;
         const lat = ymax - (row + 0.5) / srcH * spanY;
-        aMul = maskWeight(sampleMask(lat, lng));
+        aMul = maskWeight(sampleMask(lat, lng), maskMu, maskSigma);
       }
       srcBuf[p] = c[0]; srcBuf[p+1] = c[1]; srcBuf[p+2] = c[2]; srcBuf[p+3] = Math.round(c[3] * 255 * aMul);
     }
