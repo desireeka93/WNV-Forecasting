@@ -508,26 +508,47 @@
       </div>
       <div class="toggle-row" style="margin-top:10px;">
         <label class="toggle-wrap">
-          <input type="checkbox" id="pools-toggle" checked>
+          <input type="checkbox" id="mask-toggle" checked>
           <div class="toggle-track"></div>
           <div class="toggle-thumb"></div>
         </label>
-        <span class="toggle-label">Positive pools (season to date)</span>
+        <span class="toggle-label">Distance mask</span>
       </div>
     </div>
 
-    <div id="pool-controls">
-      <div class="tile-label">Positives shown</div>
-      <select id="pool-filter">
-        <option value="all">WNV + SLEV</option>
-        <option value="WNV">WNV only</option>
-        <option value="SLEV">SLEV only</option>
-      </select>
-      <div style="display:flex; gap:14px; margin-top:9px; font-size:11px; color:var(--muted);">
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#b91c1c;border:1px solid #fff;vertical-align:middle;"></span> WNV</span>
-        <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#6d28d9;border:1px solid #fff;vertical-align:middle;"></span> SLEV</span>
+    <div id="pool-section">
+      <div class="tile-label">WNV occurrence points</div>
+
+      <div id="pool-lock">
+        <div style="display:flex; gap:6px;">
+          <input type="password" id="pool-code" placeholder="Access code"
+                 style="flex:1; min-width:0; background:#f5f7fa; border:1px solid var(--border); border-radius:8px; padding:7px 10px; font-size:12px; color:var(--text);">
+          <button type="button" id="pool-unlock" class="btn-secondary" style="padding:7px 12px;">Unlock</button>
+        </div>
+        <div id="pool-lock-msg" style="font-size:10px; color:var(--muted); margin-top:6px;">Locked — occurrence locations are hidden.</div>
       </div>
-      <div id="pool-count" style="font-size:10px; color:var(--muted); margin-top:6px;"></div>
+
+      <div id="pool-controls" style="display:none;">
+        <div class="toggle-row" style="margin-bottom:10px;">
+          <label class="toggle-wrap">
+            <input type="checkbox" id="pools-toggle" checked>
+            <div class="toggle-track"></div>
+            <div class="toggle-thumb"></div>
+          </label>
+          <span class="toggle-label">Show points (season to date)</span>
+        </div>
+        <div class="tile-label">Positives shown</div>
+        <select id="pool-filter">
+          <option value="all">WNV + SLEV</option>
+          <option value="WNV">WNV only</option>
+          <option value="SLEV">SLEV only</option>
+        </select>
+        <div style="display:flex; gap:14px; margin-top:9px; font-size:11px; color:var(--muted);">
+          <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#b91c1c;border:1px solid #fff;vertical-align:middle;"></span> WNV</span>
+          <span><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#6d28d9;border:1px solid #fff;vertical-align:middle;"></span> SLEV</span>
+        </div>
+        <div id="pool-count" style="font-size:10px; color:var(--muted); margin-top:6px;"></div>
+      </div>
     </div>
 
     <div>
@@ -725,6 +746,21 @@ const LAYER_LABELS = {
 };
 const WEEKS_TO_CHECK = Array.from({length: 52}, (_, i) => i + 1);
 
+// ── Distance-accumulation mask (dbase/app/mask.tif) ──
+// Higher distance from suitable habitat → more masked. The weight is a lognormal
+// survival curve fit to the distribution of accumulation values at WNV positives:
+// weight 1 at distance 0, 0.5 at the median, →0 in the tail. Update these two
+// numbers whenever you recompute the distribution. Assumes mask.tif is EPSG:4326.
+const MASK_PATH   = "dbase/app/mask.tif";
+const MASK_MEDIAN = 73.77121;   // median accumulation value at WNV positives
+const MASK_MEAN   = 145.28429;  // mean accumulation value at WNV positives
+const MASK_MU     = Math.log(MASK_MEDIAN);
+const MASK_SIGMA  = Math.sqrt(2 * Math.max(1e-6, Math.log(MASK_MEAN / MASK_MEDIAN)));
+
+// Access-code gate for the sensitive WNV occurrence points.
+// NOTE: client-side gating is obscurity, not security — set your own code.
+const ACCESS_CODE = "changeme";
+
 function lerpColor(c1, c2, t) {
   return [
     Math.round(c1[0]+(c2[0]-c1[0])*t),
@@ -777,6 +813,44 @@ function rgbaToCss(a) { return a ? `rgba(${a[0]},${a[1]},${a[2]},${a[3]})` : nul
 function isNoData(v, noDataValue) {
   return v === null || v === undefined || isNaN(v) || !isFinite(v)
       || v === noDataValue || Math.abs(v) >= 1e20;
+}
+
+// ── Distance mask helpers ──
+let maskGeoraster = null;  // parsed mask.tif, or null if unavailable
+let maskActive = true;
+
+function erf(x) {
+  const t = 1 / (1 + 0.3275911 * Math.abs(x));
+  const y = 1 - (((((1.061405429*t - 1.453152027)*t) + 1.421413741)*t - 0.284496736)*t + 0.254829592)*t*Math.exp(-x*x);
+  return x >= 0 ? y : -y;
+}
+function normalCDF(z) { return 0.5 * (1 + erf(z / Math.SQRT2)); }
+
+// Survival weight in [0,1]: 1 near distance 0, 0.5 at the positives' median, →0 far out.
+function maskWeight(d) {
+  if (d === null || !(d > 0)) return 1;
+  const z = (Math.log(d) - MASK_MU) / MASK_SIGMA;
+  return 1 - normalCDF(z);
+}
+
+// Nearest-value sample of the mask (assumes EPSG:4326 lon/lat extent).
+function sampleMask(lat, lng) {
+  const g = maskGeoraster;
+  if (!g) return null;
+  const col = Math.floor((lng - g.xmin) / (g.xmax - g.xmin) * g.width);
+  const row = Math.floor((g.ymax - lat) / (g.ymax - g.ymin) * g.height);
+  if (col < 0 || col >= g.width || row < 0 || row >= g.height) return null;
+  const v = g.values[0][row][col];
+  return isNoData(v, g.noDataValue) ? null : v;
+}
+
+async function loadMask() {
+  try {
+    maskGeoraster = await getGeoraster(MASK_PATH);
+  } catch (e) {
+    maskGeoraster = null;
+    console.warn("Distance mask not loaded (" + MASK_PATH + "):", e.message);
+  }
 }
 
 // Week numbering matches the original R pipeline: week W starts on the Monday
@@ -938,7 +1012,7 @@ function mercYToLat(y)   { return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/M
 // (null = exotic projection -> caller falls back to GeoRasterLayer).
 // Cached by url|layer|palette.
 function buildOverlay(gr, layerId, cb) {
-  const key = `${gr.__url}|${layerId}|${cb}`;
+  const key = `${gr.__url}|${layerId}|${cb}|${maskActive ? "m" : "u"}`;
   if (overlayCache.has(key)) return overlayCache.get(key);
 
   const proj = gr.projection;
@@ -947,6 +1021,9 @@ function buildOverlay(gr, layerId, cb) {
   const { width: srcW, height: srcH, noDataValue, xmin, xmax, ymin, ymax } = gr;
   const band = gr.values[0];
   const colorFn = getColorFn(layerId, cb);
+  // Mask only applies when we have lon/lat geometry (WGS84 path).
+  const applyMask = maskActive && maskGeoraster && !(proj === 3857 || proj === 900913);
+  const spanX = xmax - xmin, spanY = ymax - ymin;
 
   // Colorize the source grid once (north-up: row 0 = north edge).
   const rowBytes = srcW * 4;
@@ -959,7 +1036,13 @@ function buildOverlay(gr, layerId, cb) {
       if (isNoData(v, noDataValue)) { srcBuf[p+3] = 0; continue; }
       const c = colorFn(v);
       if (!c) { srcBuf[p+3] = 0; continue; }
-      srcBuf[p] = c[0]; srcBuf[p+1] = c[1]; srcBuf[p+2] = c[2]; srcBuf[p+3] = Math.round(c[3] * 255);
+      let aMul = 1;
+      if (applyMask) {
+        const lng = xmin + (col + 0.5) / srcW * spanX;
+        const lat = ymax - (row + 0.5) / srcH * spanY;
+        aMul = maskWeight(sampleMask(lat, lng));
+      }
+      srcBuf[p] = c[0]; srcBuf[p+1] = c[1]; srcBuf[p+2] = c[2]; srcBuf[p+3] = Math.round(c[3] * 255 * aMul);
     }
   }
 
@@ -1164,10 +1247,15 @@ playBtn.addEventListener("click", () => {
 cbToggle.addEventListener("change", () => {
   if (availableWeeks.length) loadTif(layerSelect.value, availableWeeks[currentWeekIdx]);
 });
+document.getElementById("mask-toggle").addEventListener("change", e => {
+  maskActive = e.target.checked;
+  if (availableWeeks.length) loadTif(layerSelect.value, availableWeeks[currentWeekIdx]);
+});
 
 document.getElementById("stat-year").textContent = YEAR;
 document.getElementById("year-pill").textContent = YEAR;
-initLayer("wnv_risk", false);
+// Load the distance mask first (so the first render is already masked), then the layer.
+loadMask().then(() => initLayer("wnv_risk", false));
 
 
 /* ═══════════════════════════════════════════════════
@@ -1189,6 +1277,7 @@ const poolFilter  = document.getElementById("pool-filter");
 const poolCountEl = document.getElementById("pool-count");
 
 let poolRecords = null; // array of deduped pool objects, or [] if none/failed
+let poolsUnlocked = false; // occurrence points hidden until the access code is entered
 
 // Tokenize delimited text into rows of fields. Auto-detects comma vs tab from the
 // header, and handles quoted fields containing the delimiter, embedded newlines,
@@ -1290,6 +1379,7 @@ function poolColor(targets) {
 function renderPools() {
   poolLayer.clearLayers();
   poolCountEl.textContent = "";
+  if (!poolsUnlocked) return;                          // access-gated
   if (!poolRecords || poolRecords.length === 0) return;
   if (!poolsToggle.checked) { document.getElementById("pool-controls").style.opacity = 0.45; return; }
   document.getElementById("pool-controls").style.opacity = 1;
@@ -1329,7 +1419,28 @@ function renderPools() {
 
 poolsToggle.addEventListener("change", renderPools);
 poolFilter.addEventListener("change", renderPools);
-loadPools();
+
+// ── Access-code gate ──
+// IMPORTANT: this is client-side obfuscation, not security. pools.csv is only
+// fetched after a correct code is entered, but anyone reading the page source or
+// guessing the file URL can still reach the data. Do not rely on this to protect
+// truly sensitive coordinates — jitter/aggregate them or use server-side auth.
+const poolCodeInput = document.getElementById("pool-code");
+const poolUnlockBtn = document.getElementById("pool-unlock");
+const poolLockMsg   = document.getElementById("pool-lock-msg");
+function tryUnlockPools() {
+  if (poolCodeInput.value === ACCESS_CODE) {
+    poolsUnlocked = true;
+    document.getElementById("pool-lock").style.display = "none";
+    document.getElementById("pool-controls").style.display = "";
+    loadPools(); // fetch + render only now
+  } else {
+    poolLockMsg.textContent = "Incorrect code.";
+    poolLockMsg.style.color = "var(--accent)";
+  }
+}
+poolUnlockBtn.addEventListener("click", tryUnlockPools);
+poolCodeInput.addEventListener("keydown", e => { if (e.key === "Enter") tryUnlockPools(); });
 
 
 /* ═══════════════════════════════════════════════════
