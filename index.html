@@ -1025,9 +1025,8 @@ function buildOverlay(gr, layerId, cb) {
   const { width: srcW, height: srcH, noDataValue, xmin, xmax, ymin, ymax } = gr;
   const band = gr.values[0];
   const colorFn = getColorFn(layerId, cb);
-  // Mask is calibrated to WNV positives, so it applies to the risk layer only
-  // (not the mosquito-abundance layers). Also requires lon/lat geometry.
-  const applyMask = maskActive && maskGeoraster && layerId === "wnv_risk" && !(proj === 3857 || proj === 900913);
+  // Mask applies to all raster layers. (Requires lon/lat geometry.)
+  const applyMask = maskActive && maskGeoraster && !(proj === 3857 || proj === 900913);
   const spanX = xmax - xmin, spanY = ymax - ymin;
 
   // Colorize the source grid once (north-up: row 0 = north edge).
