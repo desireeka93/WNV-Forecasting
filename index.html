@@ -124,6 +124,14 @@
   /* ── Map tile ── */
   #map { width: 100%; height: 100%; }
 
+  /* Draw the forecast raster with sharp cell edges (nearest-neighbor) instead of
+     the browser's default bilinear blur when the image is scaled up on zoom. */
+  .raster-overlay {
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+    image-rendering: pixelated;
+  }
+
   /* ── Controls ── */
   select {
     width: 100%;
@@ -1096,7 +1104,7 @@ async function loadTif(layerId, weekNum) {
     const bounds_built = buildOverlay(gr, layerId, cb);
     if (bounds_built) {
       // Single Mercator-aligned image — alpha baked per pixel (opacity 1), no tile seams.
-      currentLayer = L.imageOverlay(bounds_built.dataURL, bounds_built.bounds, { opacity: 1, interactive: false });
+      currentLayer = L.imageOverlay(bounds_built.dataURL, bounds_built.bounds, { opacity: 1, interactive: false, className: "raster-overlay" });
     } else {
       // Exotic projection: fall back to GeoRasterLayer, which reprojects on the fly.
       const colorFn = getColorFn(layerId, cb);
