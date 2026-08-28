@@ -756,10 +756,10 @@ const WEEKS_TO_CHECK = Array.from({length: 52}, (_, i) => i + 1);
 // Update {median, mean} per layer to recalibrate. Assumes mask.tif is EPSG:4326.
 const MASK_PATH = "dbase/app/mask.tif";
 const MASK_STATS = {
-  wnv_risk:           { median: 73.77121, mean: 145.28429 }, // WNV positives
-  mosquito_abundance: { median: 89.12881, mean: 198.53718 }, // combined Culex
-  culex_quinque:      { median: 90.30016, mean: 197.02393 }, // Cx. quinquefasciatus
-  culex_tarsalis:     { median: 86.75278, mean: 203.35310 }  // Cx. tarsalis
+  wnv_risk:           { median: 145.28429, mean: 290.56858 }, // WNV positives
+  mosquito_abundance: { median: 198.53718, mean: 397.07436 }, // combined Culex
+  culex_quinque:      { median: 197.02393, mean: 394.04786 }, // Cx. quinquefasciatus
+  culex_tarsalis:     { median: 203.35310, mean: 406.70620 }  // Cx. tarsalis
 };
 function maskParams(layerId) {
   const s = MASK_STATS[layerId] || MASK_STATS.wnv_risk;
